@@ -393,44 +393,84 @@ export default function TranslateNewDocument() {
                 </motion.div>
                 <h3 className="text-2xl font-bold text-gray-900">Choose a Glossary</h3>
               </div>
-            </div>
-          </div>
-        )}
 
-        {currentStep === 2 && (
-          <div>
-            <div className="flex items-center mb-4">
-              <BookOpenIcon className="h-6 w-6 text-gray-400 mr-2" />
-              <h3 className="text-lg font-medium text-gray-900">Step 2: Select a Glossary (Optional)</h3>
-            </div>
-            
-            <div className="space-y-4">
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">
-                  Choose a glossary to ensure consistent translations:
-                </label>
-                <select
-                  value={selectedGlossary}
-                  onChange={(e) => setSelectedGlossary(e.target.value)}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-indigo-500 focus:border-indigo-500"
+              <div className="space-y-6">
+                <motion.div
+                  initial={{ opacity: 0, y: 20 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: 0.2 }}
                 >
-                  <option value="">No glossary (optional)</option>
-                  <option value="tech-terms">Technical Terms (EN → DE)</option>
-                  <option value="marketing">Marketing Terms (EN → FR)</option>
-                </select>
-              </div>
+                  <label className="block text-lg font-semibold text-gray-800 mb-4">
+                    Select a Glossary for Consistent Terminology
+                  </label>
+                  <p className="text-gray-600 mb-4">
+                    Glossaries help maintain consistent translations across your documents by preserving specific term translations.
+                  </p>
+                </motion.div>
 
-              <div className="flex justify-end">
-                <button
-                  onClick={proceedToNextStep}
-                  className="bg-indigo-600 text-white px-4 py-2 rounded-md hover:bg-indigo-700"
+                <motion.div
+                  initial={{ opacity: 0, scale: 0.95 }}
+                  animate={{ opacity: 1, scale: 1 }}
+                  transition={{ delay: 0.3 }}
+                  className="relative"
                 >
-                  Next Step
-                </button>
+                  <select
+                    value={selectedGlossary}
+                    onChange={(e) => setSelectedGlossary(e.target.value)}
+                    className="w-full px-4 py-4 bg-gradient-to-r from-green-50 to-emerald-50 border-2 border-green-200 rounded-xl focus:outline-none focus:ring-4 focus:ring-green-100 focus:border-green-400 text-gray-800 font-medium transition-all duration-300 appearance-none cursor-pointer"
+                  >
+                    <option value="" className="bg-white">No glossary (optional)</option>
+                    <option value="tech-terms" className="bg-white">🔧 Technical Terms (EN → DE)</option>
+                    <option value="marketing" className="bg-white">📢 Marketing Terms (EN → FR)</option>
+                  </select>
+                  <motion.div
+                    className="absolute inset-y-0 right-0 flex items-center pr-4 pointer-events-none"
+                    animate={{ rotate: selectedGlossary ? 180 : 0 }}
+                    transition={{ duration: 0.2 }}
+                  >
+                    <svg className="h-5 w-5 text-green-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                    </svg>
+                  </motion.div>
+                </motion.div>
+
+                {selectedGlossary && (
+                  <motion.div
+                    initial={{ opacity: 0, y: 10, height: 0 }}
+                    animate={{ opacity: 1, y: 0, height: "auto" }}
+                    exit={{ opacity: 0, y: -10, height: 0 }}
+                    className="bg-gradient-to-r from-green-100 to-emerald-100 p-4 rounded-xl border border-green-200"
+                  >
+                    <div className="flex items-center">
+                      <CheckCircleIcon className="h-5 w-5 text-green-600 mr-2" />
+                      <p className="text-green-800 font-medium">
+                        {selectedGlossary === 'tech-terms' ? 'Technical Terms glossary selected' : 'Marketing Terms glossary selected'}
+                      </p>
+                    </div>
+                    <p className="text-green-700 text-sm mt-1">
+                      Your translations will use predefined terminology for consistency.
+                    </p>
+                  </motion.div>
+                )}
+
+                <motion.div
+                  initial={{ opacity: 0, y: 20 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: 0.4 }}
+                  className="flex justify-end"
+                >
+                  <motion.button
+                    whileHover={{ scale: 1.05, backgroundColor: '#059669' }}
+                    whileTap={{ scale: 0.95 }}
+                    onClick={proceedToNextStep}
+                    className="bg-gradient-to-r from-green-600 to-emerald-600 text-white px-8 py-3 rounded-xl font-semibold shadow-lg hover:shadow-xl transition-all duration-300"
+                  >
+                    Continue to Languages
+                  </motion.button>
+                </motion.div>
               </div>
-            </div>
-          </div>
-        )}
+            </motion.div>
+          )}
 
         {currentStep === 3 && (
           <div>
