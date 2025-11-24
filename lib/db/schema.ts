@@ -26,6 +26,14 @@ export const jobStatusEnum = pgEnum("job_status", [
   "failed",
 ]);
 
+export const batchJobStatusEnum = pgEnum("batch_job_status", [
+  "queued",
+  "processing",
+  "completed",
+  "failed",
+  "cancelled",
+]);
+
 export const taskStatusEnum = pgEnum("task_status", [
   "draft",
   "in_review", 
@@ -50,20 +58,46 @@ export const users = pgTable("users", {
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
 
+// Batch Job table
+export const batchJobs = pgTable("batch_jobs", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  userId: uuid("user_id")
+    .references(() => users.id)
+    .notNull(),
+  name: varchar("name", { length: 255 }).notNull(),
+  sourceLanguage: varchar("source_language", { length: 10 }).notNull(),
+  targetLanguage: varchar("target_language", { length: 10 }).notNull(),
+  glossaryId: uuid("glossary_id").references(() => glossaries.id),
+  totalFiles: integer("total_files").notNull().default(0),
+  completedFiles: integer("completed_files").notNull().default(0),
+  failedFiles: integer("failed_files").notNull().default(0),
+  status: batchJobStatusEnum("status").notNull().default("queued"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  completedAt: timestamp("completed_at"),
+});
+
 // Translation Job table
 export const translationJobs = pgTable("translation_jobs", {
   id: uuid("id").defaultRandom().primaryKey(),
   userId: uuid("user_id")
     .references(() => users.id)
     .notNull(),
+  batchJobId: uuid("batch_job_id").references(() => batchJobs.id),
   sourceLanguage: varchar("source_language", { length: 10 }).notNull(),
   targetLanguage: varchar("target_language", { length: 10 }).notNull(),
   sourceFileName: varchar("source_file_name", { length: 255 }).notNull(),
   sourceFilePath: text("source_file_path").notNull(),
   outputFileName: varchar("output_file_name", { length: 255 }),
   outputFilePath: text("output_file_path"),
+  sourceFileFormat: varchar("source_file_format", { length: 10 }),
+  outputFileFormat: varchar("output_file_format", { length: 10 }),
   glossaryId: uuid("glossary_id").references(() => glossaries.id),
+  deeplDocumentId: varchar("deepl_document_id", { length: 255 }),
+  deeplDocumentKey: varchar("deepl_document_key", { length: 255 }),
+  billedCharacters: integer("billed_characters"),
   status: jobStatusEnum("status").notNull().default("pending"),
+  errorMessage: text("error_message"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
@@ -150,7 +184,7 @@ export const auditEvents = pgTable("audit_events", {
     .references(() => users.id)
     .notNull(),
   actionType: varchar("action_type", { length: 50 }).notNull(),
-  metadata: json("metadata").$type<Record<string, any>>(),
+  metadata: json("metadata").$type<Record<string, unknown>>(),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
@@ -170,9 +204,25 @@ export const taskSegments = pgTable("task_segments", {
 // Relations
 export const usersRelations = relations(users, ({ many }) => ({
   translationJobs: many(translationJobs),
+  batchJobs: many(batchJobs),
   assignedTasks: many(translationTasks),
   auditEvents: many(auditEvents),
 }));
+
+export const batchJobsRelations = relations(
+  batchJobs,
+  ({ one, many }) => ({
+    user: one(users, {
+      fields: [batchJobs.userId],
+      references: [users.id],
+    }),
+    glossary: one(glossaries, {
+      fields: [batchJobs.glossaryId],
+      references: [glossaries.id],
+    }),
+    translationJobs: many(translationJobs),
+  })
+);
 
 export const translationJobsRelations = relations(
   translationJobs,
@@ -180,6 +230,10 @@ export const translationJobsRelations = relations(
     user: one(users, {
       fields: [translationJobs.userId],
       references: [users.id],
+    }),
+    batchJob: one(batchJobs, {
+      fields: [translationJobs.batchJobId],
+      references: [batchJobs.id],
     }),
     glossary: one(glossaries, {
       fields: [translationJobs.glossaryId],
@@ -195,6 +249,7 @@ export const translationJobsRelations = relations(
 export const glossariesRelations = relations(glossaries, ({ many }) => ({
   entries: many(glossaryEntries),
   translationJobs: many(translationJobs),
+  batchJobs: many(batchJobs),
 }));
 
 export const glossaryEntriesRelations = relations(

@@ -1,0 +1,1 @@
+This is a sample document that has been uploaded for translation. PDF content extraction requires additional libraries in production. For demonstration purposes, this content represents extracted text from your PDF. The translation system will process each segment individually. Quality assurance checks will be performed on the translated content.

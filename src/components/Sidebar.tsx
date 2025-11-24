@@ -11,6 +11,7 @@ import {
   Cog6ToothIcon,
   UsersIcon,
   ChartBarIcon,
+  DocumentDuplicateIcon,
 } from '@heroicons/react/24/outline';
 
 interface NavigationItem {
@@ -22,6 +23,7 @@ interface NavigationItem {
 
 const allNavigation: NavigationItem[] = [
   { name: 'Translate New Document', href: '/dashboard', icon: DocumentTextIcon },
+  { name: 'Batch Translation', href: '/dashboard/batch', icon: DocumentDuplicateIcon },
   { name: 'Translation History', href: '/dashboard/history', icon: ClockIcon },
   { name: 'Glossary List', href: '/dashboard/glossaries', icon: BookOpenIcon },
   { name: 'My Tasks', href: '/tasks', icon: Cog6ToothIcon, requiredRole: ['translator', 'reviewer', 'approver', 'admin'] },

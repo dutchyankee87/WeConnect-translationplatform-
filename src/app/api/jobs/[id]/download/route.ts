@@ -6,6 +6,7 @@ import { getCurrentUser } from '@/lib/user';
 import { eq, and } from 'drizzle-orm';
 import { readFile } from 'fs/promises';
 import { existsSync } from 'fs';
+import path from 'path';
 
 export async function GET(
   request: NextRequest,
@@ -37,20 +38,57 @@ export async function GET(
 
     const jobData = job[0];
 
-    if (jobData.status !== 'completed' || !jobData.outputFilePath) {
-      return NextResponse.json({ error: 'Translation not completed' }, { status: 400 });
+    console.log('Job data:', {
+      id: jobData.id,
+      status: jobData.status,
+      outputFilePath: jobData.outputFilePath,
+      outputFileName: jobData.outputFileName
+    });
+
+    if (jobData.status !== 'completed') {
+      return NextResponse.json({ 
+        error: `Translation not completed. Status: ${jobData.status}`,
+        status: jobData.status
+      }, { status: 400 });
+    }
+
+    if (!jobData.outputFilePath) {
+      return NextResponse.json({ 
+        error: 'No output file path set for this job' 
+      }, { status: 400 });
     }
 
     if (!existsSync(jobData.outputFilePath)) {
-      return NextResponse.json({ error: 'Output file not found' }, { status: 404 });
+      console.error('Output file not found at path:', jobData.outputFilePath);
+      return NextResponse.json({ 
+        error: 'Output file not found',
+        path: jobData.outputFilePath
+      }, { status: 404 });
     }
 
     const fileBuffer = await readFile(jobData.outputFilePath);
     const fileName = jobData.outputFileName || `translated_${jobData.sourceFileName}`;
 
+    // Determine correct content type based on file extension
+    const fileExt = path.extname(fileName).toLowerCase();
+    let contentType = 'application/octet-stream';
+    
+    const mimeTypes: Record<string, string> = {
+      '.txt': 'text/plain',
+      '.srt': 'text/plain',
+      '.pdf': 'application/pdf',
+      '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      '.pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+      '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    };
+    
+    if (mimeTypes[fileExt]) {
+      contentType = mimeTypes[fileExt];
+    }
+
     const headers = new Headers();
     headers.set('Content-Disposition', `attachment; filename="${fileName}"`);
-    headers.set('Content-Type', 'application/octet-stream');
+    headers.set('Content-Type', contentType);
 
     return new NextResponse(fileBuffer, { headers });
   } catch (error) {

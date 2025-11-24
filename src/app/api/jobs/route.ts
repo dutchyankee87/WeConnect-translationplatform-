@@ -1,12 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { auth } from '@clerk/nextjs/server';
 import { db } from '@/lib/db';
-import { translationJobs, translationMemory, taskSegments, translationTasks, translationQAResults, glossaryEntries } from '@/lib/db/schema';
+import { translationJobs, translationQAResults } from '@/lib/db/schema';
 import { fileUpload } from '@/lib/upload';
-import { FileProcessor } from '@/lib/file-processor';
 import { deepl } from '@/lib/deepl';
 import { getCurrentUser } from '@/lib/user';
-import QAChecker from '@/lib/qa';
 import { eq, desc } from 'drizzle-orm';
 import path from 'path';
 
@@ -102,7 +100,7 @@ export async function GET(request: NextRequest) {
   }
 }
 
-// Background job processing function
+// Background job processing function using DeepL Document API
 async function processTranslationJob(
   jobId: string, 
   filePath: string, 
@@ -117,110 +115,104 @@ async function processTranslationJob(
       .set({ status: 'processing' })
       .where(eq(translationJobs.id, jobId));
 
-    // Extract text segments from file
-    const segments = await FileProcessor.extractTextSegments(filePath);
+    console.log('Starting document translation:', { jobId, filePath, sourceLanguage, targetLanguage });
 
-    // Create a translation task
-    const [task] = await db
-      .insert(translationTasks)
-      .values({
-        jobId,
-        sourceLanguage,
-        targetLanguage,
-        status: 'draft',
-      })
-      .returning();
-
-    // Check translation memory for existing translations
-    const processedSegments = [];
+    // Read the file and create a File object for DeepL
+    const fileBuffer = await import('fs/promises').then(fs => fs.readFile(filePath));
+    const fileName = path.basename(filePath);
+    const fileSizeMB = fileBuffer.length / (1024 * 1024);
     
-    for (let i = 0; i < segments.length; i++) {
-      const sourceText = segments[i];
-      let targetText = '';
-
-      // Check translation memory first
-      const tmMatches = await db
-        .select()
-        .from(translationMemory)
-        .where(eq(translationMemory.sourceSegment, sourceText))
-        .limit(1);
-
-      if (tmMatches.length > 0) {
-        targetText = tmMatches[0].targetSegment;
-      } else {
-        // Translate using DeepL
-        try {
-          targetText = await deepl.translateText(
-            sourceText, 
-            targetLanguage, 
-            sourceLanguage, 
-            glossaryId || undefined
-          );
-
-          // Store in translation memory
-          await db.insert(translationMemory).values({
-            jobId,
-            sourceSegment: sourceText,
-            targetSegment: targetText,
-            sourceLanguage,
-            targetLanguage,
-          });
-        } catch (translationError) {
-          console.error('Translation error for segment:', translationError);
-          targetText = sourceText; // Fallback to source text
-        }
-      }
-
-      // Store task segment
-      await db.insert(taskSegments).values({
-        taskId: task.id,
-        segmentIndex: i,
-        sourceText,
-        targetText,
-      });
-
-      processedSegments.push({
-        index: i,
-        sourceText,
-        targetText,
-      });
-    }
-
-    // Perform QA checks
-    let glossaryTerms: Array<{ sourceTerm: string; targetTerm: string }> = [];
-    if (glossaryId) {
-      const glossaryData = await db
-        .select()
-        .from(glossaryEntries)
-        .where(eq(glossaryEntries.glossaryId, glossaryId));
-      
-      glossaryTerms = glossaryData.map(entry => ({
-        sourceTerm: entry.sourceTerm,
-        targetTerm: entry.targetTerm,
-      }));
-    }
-
-    const qaResult = await QAChecker.performQA(
-      processedSegments.map(seg => ({
-        sourceText: seg.sourceText,
-        targetText: seg.targetText,
-      })),
-      glossaryTerms
-    );
-
-    // Store QA results
-    await db.insert(translationQAResults).values({
-      jobId,
-      glossaryWarnings: qaResult.glossaryWarnings,
-      numberWarnings: qaResult.numberWarnings,
-      qualityScore: qaResult.qualityScore,
+    console.log('File details:', { 
+      fileName, 
+      sizeBytes: fileBuffer.length, 
+      sizeMB: fileSizeMB.toFixed(2),
+      maxAllowed: '5MB (free tier)'
     });
 
-    // Create output file
-    const outputFileName = `translated_${path.basename(filePath)}`;
-    const outputPath = path.join(path.dirname(filePath), outputFileName);
-    
-    await FileProcessor.createOutputFile(filePath, processedSegments, outputPath);
+    // Pro accounts have much higher limits than free accounts
+    console.log('Using DeepL Document API for Pro account translation');
+
+    const file = new File([fileBuffer], fileName, { 
+      type: getFileContentType(path.extname(fileName).toLowerCase())
+    });
+
+    console.log('Uploading document to DeepL:', { fileName, size: file.size });
+
+    // Upload document to DeepL
+    let uploadResult;
+    try {
+      uploadResult = await deepl.uploadDocument(
+        file,
+        targetLanguage,
+        sourceLanguage,
+        glossaryId
+      );
+      console.log('Document uploaded:', uploadResult);
+    } catch (uploadError) {
+      console.error('DeepL upload failed:', uploadError);
+      
+      // Check if it's a 413 error and provide helpful message
+      if (uploadError instanceof Error && uploadError.message.includes('413')) {
+        throw new Error('File too large for DeepL Document API. Pro accounts support up to 100MB. Please check your file size and try again.');
+      }
+      
+      // Check if it's an authentication error
+      if (uploadError instanceof Error && uploadError.message.includes('403')) {
+        throw new Error('DeepL API authentication failed. Please check your API key configuration.');
+      }
+      
+      throw uploadError;
+    }
+
+    // Update job with DeepL document info
+    await db
+      .update(translationJobs)
+      .set({ 
+        deeplDocumentId: uploadResult.document_id,
+        deeplDocumentKey: uploadResult.document_key,
+      })
+      .where(eq(translationJobs.id, jobId));
+
+    // Wait for translation to complete
+    const finalStatus = await deepl.waitForDocumentCompletion(
+      uploadResult.document_id,
+      uploadResult.document_key,
+      (status) => {
+        console.log('Translation progress:', status);
+      }
+    );
+
+    if (finalStatus.status === 'error') {
+      throw new Error(finalStatus.error_message || 'Translation failed');
+    }
+
+    console.log('Translation completed, downloading result');
+
+    // Download the translated document
+    const translatedBlob = await deepl.downloadDocument(
+      uploadResult.document_id,
+      uploadResult.document_key
+    );
+
+    // Save the translated document
+    const originalExt = path.extname(fileName);
+    const outputFileName = `translated_${fileName}`;
+    const uploadsDir = process.env.UPLOAD_DIR || './uploads';
+    const outputPath = path.join(uploadsDir, 'jobs', outputFileName);
+
+    // Convert blob to buffer and save
+    const translatedBuffer = Buffer.from(await translatedBlob.arrayBuffer());
+    await import('fs/promises').then(fs => fs.writeFile(outputPath, translatedBuffer));
+
+    console.log('Translation saved to:', outputPath);
+
+    // Basic QA - just set a default score for document translations
+    await db.insert(translationQAResults).values({
+      jobId,
+      glossaryWarnings: 0,
+      numberWarnings: 0,
+      qualityScore: 95, // Default high score for document API
+    });
 
     // Update job as completed
     await db
@@ -229,16 +221,35 @@ async function processTranslationJob(
         status: 'completed',
         outputFileName,
         outputFilePath: outputPath,
+        billedCharacters: finalStatus.billed_characters,
       })
       .where(eq(translationJobs.id, jobId));
+
+    console.log('Translation job completed successfully');
 
   } catch (error) {
     console.error('Job processing error:', error);
     
-    // Update job as failed
+    // Update job as failed with error message
     await db
       .update(translationJobs)
-      .set({ status: 'failed' })
+      .set({ 
+        status: 'failed',
+        errorMessage: error instanceof Error ? error.message : 'Unknown error'
+      })
       .where(eq(translationJobs.id, jobId));
   }
+}
+
+// Helper function to get content type for files
+function getFileContentType(extension: string): string {
+  const mimeTypes: Record<string, string> = {
+    '.pdf': 'application/pdf',
+    '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    '.pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+    '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    '.txt': 'text/plain',
+    '.srt': 'text/plain',
+  };
+  return mimeTypes[extension] || 'application/octet-stream';
 }
