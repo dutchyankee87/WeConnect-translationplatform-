@@ -47,6 +47,11 @@ export const glossaryStatusEnum = pgEnum("glossary_status", [
   "error",
 ]);
 
+export const correctionTypeEnum = pgEnum("correction_type", [
+  "terminology", 
+  "phrasing"
+]);
+
 // User table
 export const users = pgTable("users", {
   id: uuid("id").defaultRandom().primaryKey(),
@@ -86,6 +91,10 @@ export const translationJobs = pgTable("translation_jobs", {
   batchJobId: uuid("batch_job_id").references(() => batchJobs.id),
   sourceLanguage: varchar("source_language", { length: 10 }).notNull(),
   targetLanguage: varchar("target_language", { length: 10 }).notNull(),
+  // Multi-language support
+  targetLanguages: json("target_languages").$type<string[]>(),
+  isMultiLanguage: varchar("is_multi_language", { length: 5 }).default("false"),
+  parentJobId: uuid("parent_job_id").references(() => translationJobs.id),
   sourceFileName: varchar("source_file_name", { length: 255 }).notNull(),
   sourceFilePath: text("source_file_path").notNull(),
   outputFileName: varchar("output_file_name", { length: 255 }),
@@ -96,6 +105,12 @@ export const translationJobs = pgTable("translation_jobs", {
   deeplDocumentId: varchar("deepl_document_id", { length: 255 }),
   deeplDocumentKey: varchar("deepl_document_key", { length: 255 }),
   billedCharacters: integer("billed_characters"),
+  appliedLearningCorrections: integer("applied_learning_corrections").default(0),
+  learningStatsUsed: json("learning_stats_used").$type<{
+    termCount: number;
+    segmentCount: number;
+    totalUsage: number;
+  }>(),
   status: jobStatusEnum("status").notNull().default("pending"),
   errorMessage: text("error_message"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
@@ -199,6 +214,44 @@ export const taskSegments = pgTable("task_segments", {
   targetText: text("target_text"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
+// Learning system tables for future implementation
+export const translationCorrections = pgTable("translation_corrections", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  jobId: uuid("job_id")
+    .references(() => translationJobs.id)
+    .notNull(),
+  targetLanguage: varchar("target_language", { length: 10 }).notNull(),
+  countryCode: varchar("country_code", { length: 10 }).notNull(),
+  originalText: text("original_text").notNull(),
+  correctedText: text("corrected_text").notNull(),
+  correctionType: correctionTypeEnum("correction_type").notNull(),
+  submittedBy: varchar("submitted_by", { length: 255 }).notNull(),
+  isApproved: varchar("is_approved", { length: 5 }).default("true"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
+export const learnedSegments = pgTable("learned_segments", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  sourceText: text("source_text").notNull(),
+  targetText: text("target_text").notNull(),
+  improvedText: text("improved_text").notNull(),
+  sourceLanguage: varchar("source_language", { length: 10 }).notNull(),
+  targetLanguage: varchar("target_language", { length: 10 }).notNull(),
+  usageCount: integer("usage_count").notNull().default(1),
+  lastUsed: timestamp("last_used").defaultNow(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
+export const learnedTerms = pgTable("learned_terms", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  sourceTerm: text("source_term").notNull(),
+  targetTerm: text("target_term").notNull(),
+  sourceLanguage: varchar("source_language", { length: 10 }).notNull(),
+  targetLanguage: varchar("target_language", { length: 10 }).notNull(),
+  frequency: integer("frequency").notNull().default(1),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
 // Relations

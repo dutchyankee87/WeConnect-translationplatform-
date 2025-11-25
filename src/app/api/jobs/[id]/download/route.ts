@@ -10,7 +10,7 @@ import path from 'path';
 
 export async function GET(
   request: NextRequest,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> }
 ) {
   try {
     const { userId } = await auth();
@@ -23,11 +23,13 @@ export async function GET(
       return NextResponse.json({ error: 'User not found' }, { status: 404 });
     }
 
+    const { id } = await params;
+
     const job = await db
       .select()
       .from(translationJobs)
       .where(and(
-        eq(translationJobs.id, params.id),
+        eq(translationJobs.id, id),
         eq(translationJobs.userId, user.id)
       ))
       .limit(1);

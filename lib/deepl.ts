@@ -206,9 +206,25 @@ export class DeepLAPI {
    * @returns true if file is within limits
    */
   private validateFileSize(file: File): boolean {
-    // Pro accounts: 100MB, Free accounts: 5MB
+    // Pro accounts: 30MB for PDF/DOCX/PPTX, Free accounts: 10MB for PDF/DOCX
     const isProAccount = !this.apiKey.endsWith(':fx');
-    const MAX_FILE_SIZE = isProAccount ? 100 * 1024 * 1024 : 5 * 1024 * 1024;
+    const fileExt = file.name.toLowerCase();
+    
+    let MAX_FILE_SIZE;
+    if (isProAccount) {
+      if (fileExt.endsWith('.pdf') || fileExt.endsWith('.docx') || fileExt.endsWith('.pptx') || fileExt.endsWith('.xlsx')) {
+        MAX_FILE_SIZE = 30 * 1024 * 1024; // 30MB for Pro
+      } else {
+        MAX_FILE_SIZE = 5 * 1024 * 1024; // 5MB for other formats
+      }
+    } else {
+      if (fileExt.endsWith('.pdf') || fileExt.endsWith('.docx') || fileExt.endsWith('.pptx') || fileExt.endsWith('.xlsx')) {
+        MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB for Free
+      } else {
+        MAX_FILE_SIZE = 1 * 1024 * 1024; // 1MB for other formats
+      }
+    }
+    
     return file.size <= MAX_FILE_SIZE;
   }
 
@@ -231,9 +247,18 @@ export class DeepLAPI {
     // Validate file size before upload
     if (!this.validateFileSize(file)) {
       const isProAccount = !this.apiKey.endsWith(':fx');
-      const limit = isProAccount ? '100MB' : '5MB';
+      const fileExt = file.name.toLowerCase();
+      const isPDFDOCX = fileExt.endsWith('.pdf') || fileExt.endsWith('.docx') || fileExt.endsWith('.pptx') || fileExt.endsWith('.xlsx');
+      
+      let limit;
+      if (isProAccount) {
+        limit = isPDFDOCX ? '30MB' : '5MB';
+      } else {
+        limit = isPDFDOCX ? '10MB' : '1MB';
+      }
+      
       const accountType = isProAccount ? 'Pro' : 'Free';
-      throw new Error(`File size (${(file.size / 1024 / 1024).toFixed(2)}MB) exceeds DeepL's ${accountType} tier limit of ${limit}. Please use a smaller file.`);
+      throw new Error(`File size (${(file.size / 1024 / 1024).toFixed(2)}MB) exceeds DeepL's ${accountType} tier limit of ${limit} for ${fileExt} files. Please use a smaller file.`);
     }
     const formData = new FormData();
     formData.append('file', file);
@@ -251,7 +276,17 @@ export class DeepLAPI {
       formData.append('output_format', outputFormat);
     }
 
-    const response = await fetch(`${this.baseUrl}/documents`, {
+    console.log('DeepL API request details:', {
+      url: `${this.baseUrl}/document`,
+      fileName: file.name,
+      fileSize: `${(file.size / 1024 / 1024).toFixed(2)}MB`,
+      targetLang: targetLanguage,
+      sourceLang: sourceLanguage,
+      glossaryId: glossaryId || 'none',
+      apiKeyPrefix: this.apiKey.substring(0, 8) + '...'
+    });
+
+    const response = await fetch(`${this.baseUrl}/document`, {
       method: 'POST',
       headers: {
         'Authorization': `DeepL-Auth-Key ${this.apiKey}`,
@@ -259,8 +294,19 @@ export class DeepLAPI {
       body: formData,
     });
 
+    console.log('DeepL API response:', {
+      status: response.status,
+      statusText: response.statusText,
+      headers: Object.fromEntries(response.headers.entries())
+    });
+
     if (!response.ok) {
       const errorText = await response.text();
+      console.error('DeepL API error details:', {
+        status: response.status,
+        statusText: response.statusText,
+        errorBody: errorText
+      });
       throw new Error(`DeepL Document API error: ${response.status} - ${errorText}`);
     }
 
@@ -282,7 +328,7 @@ export class DeepLAPI {
     });
 
     const response = await this.makeRequest<DocumentStatusResponse>(
-      `/documents/${documentId}?${params.toString()}`,
+      `/document/${documentId}?${params.toString()}`,
       { method: 'GET' }
     );
 
@@ -303,7 +349,7 @@ export class DeepLAPI {
       document_key: documentKey
     });
 
-    const response = await fetch(`${this.baseUrl}/documents/${documentId}/result?${params.toString()}`, {
+    const response = await fetch(`${this.baseUrl}/document/${documentId}/result?${params.toString()}`, {
       method: 'GET',
       headers: {
         'Authorization': `DeepL-Auth-Key ${this.apiKey}`,

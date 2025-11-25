@@ -7,7 +7,7 @@ import { eq, and } from 'drizzle-orm';
 
 export async function GET(
   request: NextRequest,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> }
 ) {
   try {
     const { userId } = await auth();
@@ -20,11 +20,13 @@ export async function GET(
       return NextResponse.json({ error: 'User not found' }, { status: 404 });
     }
 
+    const { id } = await params;
+
     const job = await db
       .select()
       .from(translationJobs)
       .where(and(
-        eq(translationJobs.id, params.id),
+        eq(translationJobs.id, id),
         eq(translationJobs.userId, user.id)
       ))
       .limit(1);
@@ -33,16 +35,28 @@ export async function GET(
       return NextResponse.json({ error: 'Job not found' }, { status: 404 });
     }
 
+    const currentJob = job[0];
+
+    // If it's a multi-language job, get child jobs progress
+    let childJobs: any[] = [];
+    if (currentJob.isMultiLanguage === 'true') {
+      childJobs = await db
+        .select()
+        .from(translationJobs)
+        .where(eq(translationJobs.parentJobId, id));
+    }
+
     // Get QA results if available
     const qaResults = await db
       .select()
       .from(translationQAResults)
-      .where(eq(translationQAResults.jobId, params.id))
+      .where(eq(translationQAResults.jobId, id))
       .limit(1);
 
     return NextResponse.json({ 
       success: true, 
-      job: job[0],
+      job: currentJob,
+      childJobs: childJobs, // Include child job statuses for multi-language
       qa: qaResults.length > 0 ? qaResults[0] : null
     });
   } catch (error) {

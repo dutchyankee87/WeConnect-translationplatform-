@@ -15,7 +15,7 @@ const geistMono = Geist_Mono({
 
 export const metadata: Metadata = {
   title: "Translation Platform",
-  description: "Document translation platform with DeepL integration",
+  description: "Professional document translation platform",
 };
 
 export default function RootLayout({

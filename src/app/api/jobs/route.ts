@@ -1,10 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { auth } from '@clerk/nextjs/server';
 import { db } from '@/lib/db';
-import { translationJobs, translationQAResults } from '@/lib/db/schema';
+import { translationJobs, translationQAResults, translationMemory, taskSegments, translationTasks } from '@/lib/db/schema';
 import { fileUpload } from '@/lib/upload';
 import { deepl } from '@/lib/deepl';
 import { getCurrentUser } from '@/lib/user';
+import { FileProcessor } from '@/lib/file-processor';
+import { LearningService } from '@/lib/learning';
+import { EmailService } from '@/lib/email';
 import { eq, desc } from 'drizzle-orm';
 import path from 'path';
 
@@ -26,39 +29,88 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'File upload failed' }, { status: 400 });
     }
 
-    const { sourceLanguage, targetLanguage, glossaryId } = formData;
+    const { sourceLanguage, targetLanguage, targetLanguages, isMultiLanguage, glossaryId } = formData;
 
-    if (!sourceLanguage || !targetLanguage) {
-      return NextResponse.json({ error: 'Source and target languages are required' }, { status: 400 });
+    const isMultiLang = isMultiLanguage === 'true';
+    let parsedTargetLanguages: string[] = [];
+    
+    if (isMultiLang) {
+      try {
+        parsedTargetLanguages = JSON.parse(targetLanguages as string);
+        if (!parsedTargetLanguages || parsedTargetLanguages.length === 0) {
+          return NextResponse.json({ error: 'At least one target language is required for multi-language translation' }, { status: 400 });
+        }
+      } catch (error) {
+        return NextResponse.json({ error: 'Invalid target languages format' }, { status: 400 });
+      }
+    } else if (!targetLanguage) {
+      return NextResponse.json({ error: 'Target language is required' }, { status: 400 });
     }
 
-    // Create translation job
-    const [job] = await db
-      .insert(translationJobs)
-      .values({
-        userId: user.id,
-        sourceLanguage,
-        targetLanguage,
-        sourceFileName: file.fileName!,
-        sourceFilePath: file.filePath!,
-        glossaryId: glossaryId || null,
-        status: 'pending',
-      })
-      .returning();
+    if (!sourceLanguage) {
+      return NextResponse.json({ error: 'Source language is required' }, { status: 400 });
+    }
 
-    // Start background processing
-    processTranslationJob(job.id, file.filePath!, sourceLanguage, targetLanguage, glossaryId);
+    if (isMultiLang) {
+      // Create parent multi-language job
+      const [parentJob] = await db
+        .insert(translationJobs)
+        .values({
+          userId: user.id,
+          sourceLanguage,
+          targetLanguage: parsedTargetLanguages[0], // First language as primary
+          targetLanguages: parsedTargetLanguages,
+          isMultiLanguage: 'true',
+          sourceFileName: file.fileName!,
+          sourceFilePath: file.filePath!,
+          glossaryId: glossaryId || null,
+          status: 'pending',
+        })
+        .returning();
 
-    return NextResponse.json({ 
-      success: true, 
-      job: {
-        id: job.id,
-        status: job.status,
-        sourceFileName: job.sourceFileName,
-        sourceLanguage: job.sourceLanguage,
-        targetLanguage: job.targetLanguage,
-      }
-    });
+      // Start background processing for multi-language
+      processMultiLanguageJob(parentJob.id, file.filePath!, sourceLanguage, parsedTargetLanguages, glossaryId);
+
+      return NextResponse.json({ 
+        success: true, 
+        job: {
+          id: parentJob.id,
+          status: parentJob.status,
+          sourceFileName: parentJob.sourceFileName,
+          sourceLanguage: parentJob.sourceLanguage,
+          targetLanguages: parentJob.targetLanguages,
+          isMultiLanguage: true,
+        }
+      });
+    } else {
+      // Create single-language job  
+      const [job] = await db
+        .insert(translationJobs)
+        .values({
+          userId: user.id,
+          sourceLanguage,
+          targetLanguage,
+          sourceFileName: file.fileName!,
+          sourceFilePath: file.filePath!,
+          glossaryId: glossaryId || null,
+          status: 'pending',
+        })
+        .returning();
+
+      // Start background processing
+      processTranslationJob(job.id, file.filePath!, sourceLanguage, targetLanguage, glossaryId);
+
+      return NextResponse.json({ 
+        success: true, 
+        job: {
+          id: job.id,
+          status: job.status,
+          sourceFileName: job.sourceFileName,
+          sourceLanguage: job.sourceLanguage,
+          targetLanguage: job.targetLanguage,
+        }
+      });
+    }
   } catch (error) {
     console.error('Job creation error:', error);
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
@@ -100,6 +152,142 @@ export async function GET(request: NextRequest) {
   }
 }
 
+// Multi-language job processing function
+async function processMultiLanguageJob(
+  parentJobId: string,
+  filePath: string,
+  sourceLanguage: string,
+  targetLanguages: string[],
+  glossaryId?: string
+) {
+  try {
+    // Update parent job status to processing
+    await db
+      .update(translationJobs)
+      .set({ status: 'processing' })
+      .where(eq(translationJobs.id, parentJobId));
+
+    console.log('Starting multi-language translation:', { parentJobId, targetLanguages, sourceLanguage });
+
+    // Create individual child jobs for each target language
+    const childJobs = await Promise.all(
+      targetLanguages.map(async (targetLang) => {
+        const [childJob] = await db
+          .insert(translationJobs)
+          .values({
+            userId: (await db.select().from(translationJobs).where(eq(translationJobs.id, parentJobId)))[0].userId,
+            sourceLanguage,
+            targetLanguage: targetLang,
+            sourceFileName: (await db.select().from(translationJobs).where(eq(translationJobs.id, parentJobId)))[0].sourceFileName,
+            sourceFilePath: filePath,
+            glossaryId: glossaryId || null,
+            parentJobId: parentJobId,
+            status: 'pending',
+          })
+          .returning();
+        return childJob;
+      })
+    );
+
+    // Process translations in parallel (respecting DeepL rate limits)
+    const batchSize = 3; // Conservative for DeepL API limits
+    const results = [];
+    
+    for (let i = 0; i < childJobs.length; i += batchSize) {
+      const batch = childJobs.slice(i, i + batchSize);
+      
+      const batchPromises = batch.map(async (job) => {
+        try {
+          await processTranslationJob(job.id, filePath, sourceLanguage, job.targetLanguage, glossaryId);
+          return { success: true, jobId: job.id, language: job.targetLanguage };
+        } catch (error) {
+          console.error(`Failed to process ${job.targetLanguage}:`, error);
+          return { success: false, jobId: job.id, language: job.targetLanguage, error };
+        }
+      });
+      
+      const batchResults = await Promise.all(batchPromises);
+      results.push(...batchResults);
+      
+      // Small delay between batches
+      if (i + batchSize < childJobs.length) {
+        await new Promise(resolve => setTimeout(resolve, 2000));
+      }
+    }
+
+    // Check results and update parent job status
+    const allSuccessful = results.every(result => result.success);
+    const anySuccessful = results.some(result => result.success);
+
+    if (allSuccessful) {
+      await db
+        .update(translationJobs)
+        .set({ status: 'completed' })
+        .where(eq(translationJobs.id, parentJobId));
+    } else if (anySuccessful) {
+      await db
+        .update(translationJobs)
+        .set({ 
+          status: 'completed',
+          errorMessage: `Some translations failed: ${results.filter(r => !r.success).map(r => r.language).join(', ')}`
+        })
+        .where(eq(translationJobs.id, parentJobId));
+    } else {
+      await db
+        .update(translationJobs)
+        .set({ 
+          status: 'failed',
+          errorMessage: 'All translations failed'
+        })
+        .where(eq(translationJobs.id, parentJobId));
+    }
+
+    console.log('Multi-language translation completed:', { 
+      parentJobId, 
+      successful: results.filter(r => r.success).length,
+      failed: results.filter(r => !r.success).length 
+    });
+
+    // Send email notifications for successful translations
+    if (anySuccessful) {
+      try {
+        const parentJob = await db.select().from(translationJobs).where(eq(translationJobs.id, parentJobId));
+        if (parentJob[0]) {
+          const successfulLanguages = results
+            .filter(r => r.success)
+            .map(r => r.language);
+          
+          if (successfulLanguages.length > 0) {
+            const reviewUrl = `${process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000'}/review/${parentJobId}`;
+            await EmailService.sendTranslationReadyNotification({
+              jobId: parentJobId,
+              sourceFileName: parentJob[0].sourceFileName,
+              sourceLanguage,
+              targetLanguages: successfulLanguages,
+              reviewUrl
+            });
+            console.log('Multi-language email notifications sent for:', successfulLanguages);
+          }
+        }
+      } catch (emailError) {
+        console.error('Failed to send multi-language email notifications:', emailError);
+        // Don't fail the job if email fails
+      }
+    }
+
+  } catch (error) {
+    console.error('Multi-language job processing error:', error);
+    
+    await db
+      .update(translationJobs)
+      .set({ 
+        status: 'failed',
+        errorMessage: error instanceof Error ? error.message : 'Unknown error in multi-language processing'
+      })
+      .where(eq(translationJobs.id, parentJobId));
+  }
+}
+
 // Background job processing function using DeepL Document API
 async function processTranslationJob(
   jobId: string, 
@@ -115,7 +303,11 @@ async function processTranslationJob(
       .set({ status: 'processing' })
       .where(eq(translationJobs.id, jobId));
 
-    console.log('Starting document translation:', { jobId, filePath, sourceLanguage, targetLanguage });
+    console.log('Starting document translation with learning:', { jobId, filePath, sourceLanguage, targetLanguage });
+
+    // Check for learning opportunities before translation
+    const learningStats = await LearningService.getLearningStats(sourceLanguage, targetLanguage);
+    console.log('Learning stats for this language pair:', learningStats);
 
     // Read the file and create a File object for DeepL
     const fileBuffer = await import('fs/promises').then(fs => fs.readFile(filePath));
@@ -129,14 +321,39 @@ async function processTranslationJob(
       maxAllowed: '5MB (free tier)'
     });
 
-    // Pro accounts have much higher limits than free accounts
-    console.log('Using DeepL Document API for Pro account translation');
+    // DeepL Document API has payload limits even for Pro accounts (~85KB)
+    const fileSizeKB = fileBuffer.length / 1024;
+    const useDocumentAPI = fileSizeKB < 85; // Conservative limit based on real-world testing
+    
+    console.log('Translation method decision:', {
+      fileSizeKB: fileSizeKB.toFixed(1),
+      useDocumentAPI,
+      method: useDocumentAPI ? 'DeepL Document API' : 'Text extraction + translation'
+    });
 
     const file = new File([fileBuffer], fileName, { 
       type: getFileContentType(path.extname(fileName).toLowerCase())
     });
 
     console.log('Uploading document to DeepL:', { fileName, size: file.size });
+
+    // Create learning-enhanced glossary if we have learned terms
+    let enhancedGlossaryId = glossaryId;
+    if (learningStats.termCount > 0) {
+      try {
+        const learningGlossaryId = await LearningService.createLearningGlossary(sourceLanguage, targetLanguage);
+        if (learningGlossaryId) {
+          enhancedGlossaryId = learningGlossaryId;
+          console.log('Using enhanced glossary with learned terms:', { 
+            originalGlossary: glossaryId, 
+            learningGlossary: learningGlossaryId,
+            termCount: learningStats.termCount 
+          });
+        }
+      } catch (error) {
+        console.error('Failed to create learning glossary, using original:', error);
+      }
+    }
 
     // Upload document to DeepL
     let uploadResult;
@@ -145,9 +362,9 @@ async function processTranslationJob(
         file,
         targetLanguage,
         sourceLanguage,
-        glossaryId
+        enhancedGlossaryId
       );
-      console.log('Document uploaded:', uploadResult);
+      console.log('Document uploaded with learning enhancements:', uploadResult);
     } catch (uploadError) {
       console.error('DeepL upload failed:', uploadError);
       
@@ -183,6 +400,18 @@ async function processTranslationJob(
     );
 
     if (finalStatus.status === 'error') {
+      console.error('DeepL translation failed:', {
+        documentId: uploadResult.document_id,
+        status: finalStatus,
+        errorMessage: finalStatus.error_message,
+        jobId
+      });
+      
+      // For now, treat internal server errors as temporary issues
+      if (finalStatus.error_message?.includes('Internal server error')) {
+        throw new Error('DeepL service is temporarily unavailable. This may be due to the PDF content or a temporary service issue. Please try again later or contact DeepL support if the issue persists.');
+      }
+      
       throw new Error(finalStatus.error_message || 'Translation failed');
     }
 
@@ -214,7 +443,7 @@ async function processTranslationJob(
       qualityScore: 95, // Default high score for document API
     });
 
-    // Update job as completed
+    // Update job as completed with learning stats
     await db
       .update(translationJobs)
       .set({ 
@@ -222,10 +451,45 @@ async function processTranslationJob(
         outputFileName,
         outputFilePath: outputPath,
         billedCharacters: finalStatus.billed_characters,
+        appliedLearningCorrections: learningStats.totalUsage || 0,
+        learningStatsUsed: learningStats,
       })
       .where(eq(translationJobs.id, jobId));
 
-    console.log('Translation job completed successfully');
+    console.log('Translation job completed successfully with learning stats:', {
+      jobId,
+      learningStats,
+      usedLearningGlossary: enhancedGlossaryId !== glossaryId
+    });
+
+    // Send email notification to country team
+    try {
+      const job = await db.select().from(translationJobs).where(eq(translationJobs.id, jobId));
+      if (job[0]) {
+        const reviewUrl = `${process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000'}/review/${jobId}`;
+        await EmailService.sendTranslationReadyNotification({
+          jobId,
+          sourceFileName: job[0].sourceFileName,
+          sourceLanguage,
+          targetLanguages: [targetLanguage],
+          reviewUrl
+        });
+        console.log('Email notification sent for job:', jobId);
+      }
+    } catch (emailError) {
+      console.error('Failed to send email notification:', emailError);
+      // Don't fail the job if email fails
+    }
+
+    // Clean up temporary learning glossary if we created one
+    if (enhancedGlossaryId && enhancedGlossaryId !== glossaryId) {
+      try {
+        await deepl.deleteGlossary(enhancedGlossaryId);
+        console.log('Cleaned up temporary learning glossary');
+      } catch (error) {
+        console.error('Failed to cleanup learning glossary:', error);
+      }
+    }
 
   } catch (error) {
     console.error('Job processing error:', error);
