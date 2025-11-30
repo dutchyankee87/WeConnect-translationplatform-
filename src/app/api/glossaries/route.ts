@@ -113,3 +113,54 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
 }
+
+export async function DELETE(request: NextRequest) {
+  try {
+    const { userId } = await auth();
+    if (!userId) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    const { searchParams } = new URL(request.url);
+    const glossaryId = searchParams.get('id');
+
+    if (!glossaryId) {
+      return NextResponse.json({ error: 'Glossary ID required' }, { status: 400 });
+    }
+
+    // Get glossary to check if it exists and get DeepL ID
+    const [glossary] = await db
+      .select()
+      .from(glossaries)
+      .where(eq(glossaries.id, glossaryId));
+
+    if (!glossary) {
+      return NextResponse.json({ error: 'Glossary not found' }, { status: 404 });
+    }
+
+    // Delete from DeepL if it has a DeepL ID
+    if (glossary.deeplGlossaryId) {
+      try {
+        await deepl.deleteGlossary(glossary.deeplGlossaryId);
+      } catch (deeplError) {
+        console.error('DeepL deletion error:', deeplError);
+        // Continue with local deletion even if DeepL fails
+      }
+    }
+
+    // Delete glossary entries first (foreign key constraint)
+    await db
+      .delete(glossaryEntries)
+      .where(eq(glossaryEntries.glossaryId, glossaryId));
+
+    // Delete the glossary
+    await db
+      .delete(glossaries)
+      .where(eq(glossaries.id, glossaryId));
+
+    return NextResponse.json({ success: true });
+  } catch (error) {
+    console.error('Glossary deletion error:', error);
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
+  }
+}

@@ -10,6 +10,7 @@ import {
   XMarkIcon,
   MagnifyingGlassIcon,
 } from '@heroicons/react/24/outline';
+import { useRouter } from 'next/navigation';
 import Card from '@/components/ui/Card';
 import Button from '@/components/ui/Button';
 import Badge from '@/components/ui/Badge';
@@ -29,6 +30,7 @@ interface Glossary {
 }
 
 export default function GlossariesPage() {
+  const router = useRouter();
   const [glossaries, setGlossaries] = useState<Glossary[]>([]);
   const [loading, setLoading] = useState(true);
   const [showCreateModal, setShowCreateModal] = useState(false);
@@ -190,9 +192,13 @@ export default function GlossariesPage() {
                     </div>
                   </div>
 
-                  {/* Future: Add action buttons */}
                   <div className="mt-4 pt-4 border-t border-slate-200">
-                    <Button variant="ghost" size="sm" fullWidth>
+                    <Button 
+                      variant="ghost" 
+                      size="sm" 
+                      fullWidth
+                      onClick={() => router.push(`/dashboard/glossaries/${glossary.id}`)}
+                    >
                       View Details
                     </Button>
                   </div>

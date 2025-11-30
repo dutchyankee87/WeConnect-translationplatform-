@@ -48,6 +48,17 @@ export default function Sidebar() {
     const fetchUserRole = async () => {
       try {
         const response = await fetch('/api/user/profile');
+        
+        // Check if response is JSON before parsing
+        const contentType = response.headers.get('content-type');
+        if (!contentType || !contentType.includes('application/json')) {
+          throw new Error('Response is not JSON');
+        }
+        
+        if (!response.ok) {
+          throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        
         const data = await response.json();
         if (data.success) {
           const role = data.user.role;
@@ -59,6 +70,9 @@ export default function Sidebar() {
           });
           
           setNavigation(filteredNavigation);
+        } else {
+          // Handle API errors gracefully
+          throw new Error(data.error || 'Failed to fetch user profile');
         }
       } catch (error) {
         console.error('Failed to fetch user role:', error);
@@ -224,7 +238,7 @@ function SidebarContent({
       {/* Navigation */}
       <nav className="flex-1 overflow-y-auto px-3 py-4 space-y-1">
         {navigation.map((item) => {
-          const isActive = pathname === item.href || pathname.startsWith(item.href + '/');
+          const isActive = pathname === item.href || (pathname.startsWith(item.href + '/') && item.href !== '/dashboard');
           const Icon = item.icon;
 
           const linkContent = (
